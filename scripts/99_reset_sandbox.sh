@@ -1,15 +1,18 @@
 #!/usr/bin/env bash
 # ---------------------------------------------------------------------------
-# Wipe test branches, PRs and tags so you can re-run from a clean state.
-# Does NOT touch master, corp-dev, corp-qa or the Databricks workspace.
-#   bash scripts/99_reset_sandbox.sh
+# Wipe test branches and PRs so you can re-run cleanly.
+# Leaves master, corp-dev, corp-qa, release tags and the workspace alone.
 # ---------------------------------------------------------------------------
 source "$(dirname "$0")/lib.sh"
 
 step "Closing open test PRs"
-gh pr list --state open --json number,headRefName \
-  --jq '.[]|select(.headRefName|test("^(feature|hotfix|release|revert)/t[0-9]"))|.number' \
-  | while read -r n; do gh pr close "$n" >/dev/null && info "closed PR #$n"; done
+api GET "/repos/$REPO/pulls?state=open&per_page=100" \
+  | "$PY" -c "
+import sys,json,re
+for p in json.load(sys.stdin):
+    if re.match(r'^(feature|hotfix|release|revert)/t\d', p['head']['ref']):
+        print(p['number'])
+" | while read -r n; do pr_close "$n" && info "closed PR #$n"; done
 
 step "Deleting test branches"
 git fetch origin --prune --quiet
@@ -23,9 +26,8 @@ for b in corp-dev corp-qa; do
   git push -q origin "origin/master:refs/heads/$b" --force && pass "$b reset to master"
 done
 
-step "Test tags"
+step "Release tags kept (rollback needs them)"
 git fetch --tags --quiet
-info "Release tags kept (needed for rollback tests). Remove manually if you want:"
 git tag -l "cdp-release-*" | sed 's/^/    /' || true
 
 summary

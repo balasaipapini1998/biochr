@@ -2,9 +2,9 @@
 # ---------------------------------------------------------------------------
 # APPROACH 1B — fully automatic promotion
 #
-#   gh workflow disable approach_1a.yml
-#   gh workflow enable  approach_1b.yml
 #   bash scripts/03_test_approach1b.sh
+#
+# The script switches the workflows over for you.
 #
 # Proves: a feature merged to corp-dev reaches the qa workspace with NO human
 # involvement; only that feature is promoted; and a conflicting feature stops
@@ -13,13 +13,14 @@
 source "$(dirname "$0")/lib.sh"
 T=$(date +%s | tail -c 4)
 
-gh workflow list --json name,state --jq '.[]|select(.name=="approach_1a" and .state=="active")|.name' \
-  | grep -q approach_1a && warn "approach_1a is still enabled — run: gh workflow disable approach_1a.yml"
+[[ "$(wf_state approach_1a.yml)" == "active" ]] && \
+  warn "approach_1a is still enabled — disabling it now" && wf_disable approach_1a.yml
+[[ "$(wf_state approach_1b.yml)" != "active" ]] && wf_enable approach_1b.yml
 
 step "TEST A  Merge a feature to corp-dev and walk away"
 make_feature "feature/t${T}-auto" "resources/t${T}auto.txt" "auto promoted"
 PR=$(open_pr "feature/t${T}-auto" corp-dev)
-gh pr merge "$PR" --merge --admin >/dev/null 2>&1 || gh pr merge "$PR" --merge >/dev/null
+pr_merge "$PR" merge >/dev/null
 pass "merged PR #$PR into corp-dev — no further human action from here"
 
 step "Waiting for the full chain: deploy dev -> merge to qa -> deploy qa"
@@ -58,7 +59,7 @@ info "corp-qa now holds a conflicting version of the same file"
 QA_BEFORE=$(git rev-parse origin/corp-qa)
 
 PR=$(open_pr "feature/t${T}-x" corp-dev)
-gh pr merge "$PR" --merge --admin >/dev/null 2>&1 || gh pr merge "$PR" --merge >/dev/null
+pr_merge "$PR" merge >/dev/null
 C=$(wait_for_run approach_1b.yml 1200)
 [[ "$C" == "failure" ]] \
   && pass "workflow failed on the conflict instead of forcing a merge" \

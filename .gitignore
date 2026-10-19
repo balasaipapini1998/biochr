@@ -1,0 +1,5 @@
+# Never commit the sandbox token
+.sandbox-env
+.databrickscfg
+bundle_config_schema.json
+.databricks/

@@ -8,7 +8,7 @@
 # cut from corp-dev is detected, a release containing unseen code is rejected,
 # and the emergency label bypasses the gate.
 #
-# No Databricks involvement — this is pure Git logic.
+# No Databricks involvement and no GitHub CLI — pure Git plus the REST API.
 # ---------------------------------------------------------------------------
 source "$(dirname "$0")/lib.sh"
 T=$(date +%s | tail -c 4)      # short run id so branches stay unique
@@ -19,14 +19,14 @@ PR=$(open_pr "feature/t${T}-a" corp-dev)
 [[ "$(gate_conclusion "$PR")" == "SUCCESS" ]] \
   && pass "gate allowed feature -> corp-dev" \
   || fail "gate should have allowed feature -> corp-dev (PR #$PR)"
-gh pr merge "$PR" --merge --admin >/dev/null 2>&1 || gh pr merge "$PR" --merge >/dev/null
+pr_merge "$PR" merge >/dev/null
 info "merged into corp-dev"
 sleep 5
 PR=$(open_pr "feature/t${T}-a" corp-qa)
 [[ "$(gate_conclusion "$PR")" == "SUCCESS" ]] \
   && pass "gate allowed feature -> corp-qa (it is in corp-dev)" \
   || fail "gate should have allowed feature -> corp-qa (PR #$PR)"
-gh pr merge "$PR" --merge --admin >/dev/null 2>&1 || gh pr merge "$PR" --merge >/dev/null
+pr_merge "$PR" merge >/dev/null
 info "merged into corp-qa"
 
 step "TEST 2  Skipping dev: feature -> corp-qa directly  (must BLOCK)"
@@ -35,11 +35,11 @@ PR=$(open_pr "feature/t${T}-b" corp-qa)
 [[ "$(gate_conclusion "$PR")" == "FAILURE" ]] \
   && pass "gate blocked a feature that skipped corp-dev" \
   || fail "gate should have BLOCKED PR #$PR"
-gh pr close "$PR" >/dev/null
+pr_close "$PR"
 
 step "TEST 3  Skipping QA: feature -> release/*  (must BLOCK)"
 PR_B=$(open_pr "feature/t${T}-b" corp-dev)
-gh pr merge "$PR_B" --merge --admin >/dev/null 2>&1 || gh pr merge "$PR_B" --merge >/dev/null
+pr_merge "$PR_B" merge >/dev/null
 info "feature B is now in corp-dev but NOT in corp-qa"
 git fetch origin --quiet
 git push -q origin "origin/master:refs/heads/release/t${T}" 2>/dev/null || true
@@ -49,13 +49,13 @@ PR=$(open_pr "feature/t${T}-b" "release/t${T}")
   || fail "gate should have BLOCKED PR #$PR"
 
 step "TEST 4  Emergency bypass"
-gh pr edit "$PR" --add-label emergency-hotfix >/dev/null
+pr_label_add "$PR" emergency-hotfix
 sleep 5
 [[ "$(gate_conclusion "$PR")" == "SUCCESS" ]] \
   && pass "emergency-hotfix label bypassed the gate" \
   || fail "bypass label did not work on PR #$PR"
-gh pr edit "$PR" --remove-label emergency-hotfix >/dev/null
-gh pr close "$PR" >/dev/null
+pr_label_remove "$PR" emergency-hotfix
+pr_close "$PR"
 
 step "TEST 5  Branch cut from corp-dev instead of master  (must BLOCK)"
 git fetch origin --quiet
@@ -67,7 +67,7 @@ PR=$(open_pr "feature/t${T}-c" corp-dev)
 [[ "$(gate_conclusion "$PR")" == "FAILURE" ]] \
   && pass "gate detected a branch cut from corp-dev" \
   || fail "gate should have BLOCKED PR #$PR"
-gh pr close "$PR" >/dev/null
+pr_close "$PR"
 
 step "TEST 6  Release containing code QA never saw  (must BLOCK)"
 git fetch origin --quiet
@@ -78,7 +78,7 @@ PR=$(open_pr "release/t${T}b" master)
 [[ "$(gate_conclusion "$PR")" == "FAILURE" ]] \
   && pass "gate rejected a release holding code QA never saw" \
   || fail "gate should have BLOCKED PR #$PR"
-gh pr close "$PR" >/dev/null
+pr_close "$PR"
 
 git checkout -q master
 summary

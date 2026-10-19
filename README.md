@@ -21,8 +21,9 @@ sandbox/
 │       ├── approach_1a.yml        APPROACH 1A
 │       ├── approach_1b.yml        APPROACH 1B
 │       └── rollback.yml           restore a previous tag
+├── .sandbox-env.example           copy to .sandbox-env and add your token
 └── scripts/
-    ├── lib.sh                     shared helpers
+    ├── lib.sh                     REST API helpers (curl + python, no gh)
     ├── 00_setup_repo.sh           one-time setup
     ├── 01_test_approach2_gate.sh  6 gate scenarios
     ├── 02_test_approach1a.sh      auto-promote + selectivity
@@ -63,11 +64,16 @@ running a job starts a cluster. Every test here is about deployment mechanics.
 
 ### 1. Create the repo
 
+Create an **empty public repo** called `cdp-sandbox` in the browser
+(github.com → New repository → Public → no README). Then:
+
 ```bash
-gh repo create cdp-sandbox --public --clone
+git clone https://github.com/<you>/cdp-sandbox.git
 cd cdp-sandbox
 # copy the contents of this sandbox/ folder in, then:
-git add -A && git commit -m "sandbox baseline" && git push -u origin master
+git add -A && git commit -m "sandbox baseline"
+git branch -M master
+git push -u origin master
 ```
 
 > **Make it public.** Branch protection on private repos needs a paid plan.
@@ -88,18 +94,34 @@ Edit `databricks.yml` and set `node_type_id` for your cloud:
 | AWS | `i3.xlarge` |
 | GCP | `n1-standard-4` |
 
-### 3. Add the secrets
+### 3. Add the Databricks secrets
 
-```bash
-gh secret set DATABRICKS_HOST   # https://adb-xxxx.azuredatabricks.net
-gh secret set DATABRICKS_TOKEN  # a PAT from User Settings -> Developer
-```
+In the browser: **Settings → Secrets and variables → Actions → New repository secret**
 
-The sandbox uses a PAT instead of Azure OIDC — setting up federated
-credentials for a personal workspace is not worth the effort. Everything else
+| Name | Value |
+|---|---|
+| `DATABRICKS_HOST` | `https://adb-xxxx.azuredatabricks.net` |
+| `DATABRICKS_TOKEN` | a PAT from Databricks → User Settings → Developer |
+
+The sandbox uses a Databricks PAT instead of Azure OIDC — federated
+credentials for a personal workspace are not worth the effort. Everything else
 is identical to the client version.
 
-### 4. Run setup
+### 4. Create a GitHub token for the scripts
+
+The scripts talk to the GitHub REST API with `curl`. **No GitHub CLI needed.**
+
+Create a **classic** PAT at https://github.com/settings/tokens → *Generate new
+token (classic)* with scopes **`repo`** and **`workflow`**. Then either:
+
+```bash
+export GITHUB_TOKEN=ghp_xxxxxxxx          # this shell only
+```
+
+or copy `.sandbox-env.example` to `.sandbox-env` and put the token in there —
+the scripts pick it up automatically, and it is gitignored.
+
+### 5. Run setup
 
 ```bash
 bash scripts/00_setup_repo.sh
@@ -109,7 +131,7 @@ Creates `corp-dev` and `corp-qa`, enables auto-merge, restricts merges to
 merge-commits, turns **off** delete-on-merge, creates the `emergency-hotfix`
 label, and applies branch protection if the repo is public.
 
-### 5. Seed all three environments
+### 6. Seed all three environments
 
 ```bash
 git checkout corp-dev && git merge master && git push
@@ -124,7 +146,11 @@ Three deploys run. Check the Jobs UI — six jobs should appear.
 ## The tests
 
 Scripts are bash. On Windows use **Git Bash** (ships with Git for Windows),
-not PowerShell. They need `git` and `gh`, both already authenticated.
+not PowerShell.
+
+Requirements: **`git`, `curl`, `python3`** — curl is already in Git Bash, and
+python is almost certainly on a data engineer's machine. There is **no GitHub
+CLI dependency**; everything goes through the REST API.
 
 Every script prints `PASS` / `FAIL` per assertion and a summary at the end.
 
@@ -146,10 +172,10 @@ bash scripts/01_test_approach2_gate.sh
 ### Approach 1A — auto-promote, merge on approval (~10 min)
 
 ```bash
-gh workflow disable approach_1b.yml
-gh workflow enable  approach_1a.yml
 bash scripts/02_test_approach1a.sh
 ```
+
+The script enables `approach_1a` and disables `approach_1b` for you.
 
 Merging a feature into `corp-dev` deploys the dev folder, then raises a
 `feature → corp-qa` PR **automatically** with auto-merge enabled. Approve it
@@ -161,16 +187,18 @@ promotion PR.
 ### Approach 1B — fully automatic (~12 min)
 
 ```bash
-gh workflow disable approach_1a.yml
-gh workflow enable  approach_1b.yml
 bash scripts/03_test_approach1b.sh
 ```
+
+The script switches the workflows over for you.
 
 Merge once, walk away, and the feature lands in the qa workspace with no human
 at any point. Also proves the conflict case: a feature that conflicts with
 `corp-qa` **stops the workflow** and leaves `corp-qa` byte-for-byte unchanged.
 
-> Only one of 1A / 1B may be enabled at a time, or both fire on the same merge.
+> Only one of 1A / 1B may be enabled at a time, or both fire on the same
+> merge. The scripts handle the switch, but if you run things by hand the
+> helpers `wf_enable` / `wf_disable` in `lib.sh` do it.
 
 ### Rollback (~15 min, the one that changes prod)
 
@@ -253,7 +281,18 @@ creates new commit ids, so the feature's commits are not found in `corp-dev`.
 Merge commits only. (Worth reproducing once deliberately — it is the single
 hard requirement of Approach 2.)
 
-**Both 1A and 1B fired** — disable one: `gh workflow disable approach_1b.yml`.
+**Both 1A and 1B fired** — only one may be active. The test scripts switch
+them automatically; to do it by hand, use the Actions tab (⋯ → Disable
+workflow) or `source scripts/lib.sh && wf_disable approach_1b.yml`.
 
-**`gh pr merge --admin` fails** — you are not an admin or the repo is private
-without protection. The scripts fall back to a plain merge automatically.
+**`ERROR: no token`** — export `GITHUB_TOKEN`, or create `.sandbox-env` from
+the example file.
+
+**`ERROR: python3 is required`** — install Python from python.org, tick "Add
+to PATH", then reopen Git Bash. The scripts use it only to read JSON.
+
+**A merge is refused with "Required status check is expected"** — the gate has
+not finished yet, or it failed. That is the gate doing its job; check the PR.
+
+**HTTP 403 on branch protection** — private repo on a free plan. Make the repo
+public, or skip protection (the gate still runs and fails correctly).

@@ -1,0 +1,10 @@
+# Copy this file to  .sandbox-env  (same folder) and fill in your token.
+# .sandbox-env is gitignored — it must never be committed.
+#
+# Create a CLASSIC Personal Access Token at:
+#   https://github.com/settings/tokens  ->  Generate new token (classic)
+# Scopes required:
+#   [x] repo          (full control of private repositories)
+#   [x] workflow      (update GitHub Action workflows)
+#
+GITHUB_TOKEN=ghp_replace_me

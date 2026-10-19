@@ -27,7 +27,7 @@ echo "release 1" >> "resources/t${T}rel.txt"
 git add -A && git commit -qm "release 1 baseline"
 git push -q -u origin "release/t${T}r1" --force
 PR=$(open_pr "release/t${T}r1" master)
-gh pr merge "$PR" --merge --admin >/dev/null 2>&1 || gh pr merge "$PR" --merge >/dev/null
+pr_merge "$PR" merge >/dev/null
 C=$(wait_for_run deploy.yml 900)
 [[ "$C" == "success" ]] && pass "release 1 deployed to prod" || fail "release 1 deploy: $C"
 
@@ -44,7 +44,7 @@ rm -f resources/job_customer_ingest.yml.bak
 git add -A && git commit -qm "release 2: drop segment_calc, rename ingest"
 git push -q -u origin "release/t${T}r2" --force
 PR=$(open_pr "release/t${T}r2" master)
-gh pr merge "$PR" --merge --admin >/dev/null 2>&1 || gh pr merge "$PR" --merge >/dev/null
+pr_merge "$PR" merge >/dev/null
 MERGE_SHA=$(git ls-remote origin master | cut -f1)
 C=$(wait_for_run deploy.yml 900)
 [[ "$C" == "success" ]] && pass "release 2 deployed to prod" || fail "release 2 deploy: $C"
@@ -60,9 +60,8 @@ info "   cdp_sbx_segment_calc_prod         GONE — destroyed by the deploy"
 info ""
 
 step "ROLLBACK to $TAG1"
-gh workflow run rollback.yml \
-   -f release_tag="$TAG1" -f target=master \
-   -f reason="sandbox rollback test ${T}" >/dev/null
+wf_dispatch rollback.yml master \
+   release_tag "$TAG1" target master reason "sandbox rollback test ${T}"
 pass "rollback workflow dispatched"
 C=$(wait_for_run rollback.yml 900)
 [[ "$C" == "success" ]] && pass "rollback run succeeded" || fail "rollback run: $C"

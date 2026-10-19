@@ -1,0 +1,25 @@
+# Delete this file and redeploy to watch Databricks DESTROY the job.
+# Restore it (or roll back to an older tag) to watch it come back — with a
+# NEW job id. That is the rollback caveat, demonstrated.
+resources:
+  jobs:
+    segment_calc:
+      name: cdp_sbx_segment_calc_${var.env_suffix}
+      tags:
+        managed_by: databricks_asset_bundle
+        environment: ${var.env_suffix}
+      tasks:
+        - task_key: segment
+          notebook_task:
+            notebook_path: ../src/segment_calc.py
+            base_parameters:
+              env: ${var.env_suffix}
+          new_cluster:
+            spark_version: ${var.spark_version}
+            node_type_id: ${var.node_type_id}
+            num_workers: 0
+            spark_conf:
+              spark.databricks.cluster.profile: singleNode
+              spark.master: "local[*]"
+            custom_tags:
+              ResourceClass: SingleNode

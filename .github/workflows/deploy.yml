@@ -1,0 +1,98 @@
+# ============================================================================
+# deploy — main deployment workflow (sandbox version)
+#
+# Same shape as the client workflow, with one simplification: authentication
+# uses a Databricks PAT instead of Azure OIDC, because setting up federated
+# credentials for a personal workspace is not worth the effort. Everything
+# else — concurrency, targets, tagging — is identical.
+#
+# Repo secrets required:  DATABRICKS_HOST  DATABRICKS_TOKEN
+# ============================================================================
+
+name: deploy
+
+on:
+  push:
+    branches: [corp-dev, corp-qa, master]
+  workflow_dispatch:
+
+permissions:
+  contents: write          # needed to push the release tag
+
+env:
+  DATABRICKS_HOST:  ${{ secrets.DATABRICKS_HOST }}
+  DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
+
+jobs:
+  validate_deploy:
+    runs-on: ubuntu-latest
+
+    concurrency:
+      group: deploy-${{ github.ref_name }}
+      cancel-in-progress: false
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Show what is being deployed
+        run: |
+          echo "Branch / target : ${{ github.ref_name }}"
+          echo "Commit          : ${GITHUB_SHA}"
+          git log -1 --oneline
+
+      - uses: databricks/setup-cli@main
+
+      - name: Validate bundle
+        run: databricks bundle validate -t ${{ github.ref_name }}
+
+      # Read this output during the rollback test — it prints
+      # create / update / destroy per resource.
+      - name: Deploy bundle
+        run: databricks bundle deploy -t ${{ github.ref_name }}
+
+      - name: Tag release
+        if: github.ref_name == 'master'
+        id: tag
+        run: |
+          set -euo pipefail
+          git config --global user.name  "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          git fetch --tags --quiet
+
+          TAG=$(git tag --list "cdp-release-*" --sort=-v:refname | head -n1)
+          TAG=${TAG:-cdp-release-0.0.0}
+          VERSION=${TAG#cdp-release-}
+          IFS='.' read -r MAJOR MINOR PATCH <<< "$VERSION"
+          MAJOR=${MAJOR:-0}; MINOR=${MINOR:-0}; PATCH=${PATCH:-0}
+
+          MSG=$(git log -1 --pretty=%B)
+          if [[ "$MSG" =~ major_release_ ]]; then
+            MAJOR=$((MAJOR+1)); MINOR=0; PATCH=0; REASON="major"
+          elif [[ "$MSG" =~ hotfix/ ]]; then
+            PATCH=$((PATCH+1)); REASON="patch (hotfix)"
+          else
+            MINOR=$((MINOR+1)); PATCH=0; REASON="minor (weekly release)"
+          fi
+
+          NEW_TAG="cdp-release-$MAJOR.$MINOR.$PATCH"
+          if git ls-remote --tags origin | grep -q "refs/tags/$NEW_TAG$"; then
+            echo "::warning::$NEW_TAG already exists"
+            echo "tag=$NEW_TAG" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          git tag -a "$NEW_TAG" -m "Release $NEW_TAG ($REASON)"
+          git push origin "$NEW_TAG"
+          echo "tag=$NEW_TAG" >> "$GITHUB_OUTPUT"
+          echo "Tagged $NEW_TAG — $REASON"
+
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo "### Deploy"
+            echo "- Target: \`${{ github.ref_name }}\`"
+            echo "- Commit: \`${GITHUB_SHA}\`"
+            [[ "${{ github.ref_name }}" == "master" ]] && \
+              echo "- Tag: \`${{ steps.tag.outputs.tag }}\`"
+          } >> "$GITHUB_STEP_SUMMARY"

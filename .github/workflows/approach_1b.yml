@@ -1,0 +1,126 @@
+# ============================================================================
+# APPROACH 1B — fully automatic promotion, no human
+#
+# PR feature_x -> corp-dev merged
+#   -> deploy corp-dev
+#   -> open PR feature_x -> corp-qa and MERGE IT IMMEDIATELY
+#   -> deploy corp-qa
+#
+# In the client repo this needs a PAT on the corp-qa bypass list. In a personal
+# sandbox the built-in GITHUB_TOKEN is enough UNLESS you have enabled branch
+# protection on corp-qa — in which case add PROMOTION_TOKEN (a classic PAT with
+# 'repo' scope) and the workflow uses it automatically.
+#
+# Disable approach_1a.yml while testing this one, or both will fire.
+# ============================================================================
+
+name: approach_1b
+
+on:
+  pull_request:
+    types: [closed]
+    branches: [corp-dev]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+env:
+  DATABRICKS_HOST:  ${{ secrets.DATABRICKS_HOST }}
+  DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
+
+jobs:
+
+  deploy_dev:
+    if: github.event.pull_request.merged == true
+    runs-on: ubuntu-latest
+    concurrency:
+      group: deploy-corp-dev
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+        with: { ref: corp-dev }
+      - uses: databricks/setup-cli@main
+      - run: databricks bundle validate -t corp-dev
+      - run: databricks bundle deploy -t corp-dev
+
+  promote_feature_to_qa:
+    needs: deploy_dev
+    if: success()
+    runs-on: ubuntu-latest
+    outputs:
+      merged: ${{ steps.merge.outputs.merged }}
+    env:
+      FEATURE: ${{ github.event.pull_request.head.ref }}
+      DEV_PR:  ${{ github.event.pull_request.number }}
+      GH_TOKEN: ${{ secrets.PROMOTION_TOKEN || secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.PROMOTION_TOKEN || secrets.GITHUB_TOKEN }}
+
+      - name: Already in corp-qa?
+        id: check
+        run: |
+          git fetch origin corp-qa "$FEATURE" --quiet
+          if git merge-base --is-ancestor "origin/$FEATURE" origin/corp-qa; then
+            echo "needed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "needed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      # Never leave corp-qa half-merged: test the merge first, then abort.
+      - name: Will it merge cleanly?
+        id: clean
+        if: steps.check.outputs.needed == 'true'
+        run: |
+          git config user.name  "promotion-bot"
+          git config user.email "promotion-bot@users.noreply.github.com"
+          git checkout -q corp-qa
+          if git merge --no-commit --no-ff "origin/$FEATURE" >/dev/null 2>&1; then
+            git merge --abort 2>/dev/null || true
+            echo "ok=true" >> "$GITHUB_OUTPUT"
+          else
+            git merge --abort 2>/dev/null || true
+            echo "ok=false" >> "$GITHUB_OUTPUT"
+            echo "::error::'$FEATURE' conflicts with corp-qa — promotion stopped, corp-qa untouched."
+            exit 1
+          fi
+
+      - name: Open and merge immediately
+        id: merge
+        if: steps.clean.outputs.ok == 'true'
+        run: |
+          NUM=$(gh pr list --base corp-qa --head "$FEATURE" --state open \
+                  --json number --jq '.[0].number // empty')
+          if [[ -z "$NUM" ]]; then
+            NUM=$(gh pr create --base corp-qa --head "$FEATURE" \
+                    --title "Auto-promote $FEATURE to corp-qa" \
+                    --body "Merged without review after a successful dev deploy (corp-dev PR #$DEV_PR)." \
+                    --label "auto-promotion" | grep -oE '[0-9]+$')
+          fi
+          gh pr merge "$NUM" --merge
+          echo "merged=true" >> "$GITHUB_OUTPUT"
+          echo "Merged PR #$NUM with no review"
+
+  deploy_qa:
+    needs: promote_feature_to_qa
+    if: needs.promote_feature_to_qa.outputs.merged == 'true'
+    runs-on: ubuntu-latest
+    concurrency:
+      group: deploy-corp-qa
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+        with: { ref: corp-qa }
+      - uses: databricks/setup-cli@main
+      - run: databricks bundle validate -t corp-qa
+      - run: databricks bundle deploy -t corp-qa
+      - name: Summary
+        run: |
+          {
+            echo "### 1B — fully automatic"
+            echo "- \`${{ github.event.pull_request.head.ref }}\` reached qa with no human involved"
+            echo "- Only this feature was promoted; nothing else in corp-dev came with it"
+          } >> "$GITHUB_STEP_SUMMARY"

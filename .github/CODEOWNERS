@@ -1,0 +1,5 @@
+# In a personal sandbox you are the only owner, so this mostly documents
+# intent. In the client repo these become real team handles.
+*                      @OWNER_PLACEHOLDER
+.github/workflows/     @OWNER_PLACEHOLDER
+resources/             @OWNER_PLACEHOLDER

@@ -1,0 +1,93 @@
+# ============================================================================
+# APPROACH 1A — auto-promote the FEATURE, merge on Lead approval
+#
+# PR feature_x -> corp-dev merged
+#   -> deploy corp-dev to the dev folder
+#   -> open PR feature_x -> corp-qa
+#   -> enable auto-merge (merges itself once approved + checks pass)
+#
+# Requires: Settings -> General -> "Allow auto-merge" ON
+#           Settings -> General -> "Automatically delete head branches" OFF
+# ============================================================================
+
+name: approach_1a
+
+on:
+  pull_request:
+    types: [closed]
+    branches: [corp-dev]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+env:
+  DATABRICKS_HOST:  ${{ secrets.DATABRICKS_HOST }}
+  DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
+
+jobs:
+
+  deploy_dev:
+    if: github.event.pull_request.merged == true
+    runs-on: ubuntu-latest
+    concurrency:
+      group: deploy-corp-dev
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+        with: { ref: corp-dev }
+      - uses: databricks/setup-cli@main
+      - run: databricks bundle validate -t corp-dev
+      - run: databricks bundle deploy -t corp-dev
+
+  promote_feature_to_qa:
+    needs: deploy_dev
+    if: success()
+    runs-on: ubuntu-latest
+    env:
+      FEATURE: ${{ github.event.pull_request.head.ref }}
+      DEV_PR:  ${{ github.event.pull_request.number }}
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+
+      - name: Already in corp-qa?
+        id: check
+        run: |
+          git fetch origin corp-qa "$FEATURE" --quiet
+          if git merge-base --is-ancestor "origin/$FEATURE" origin/corp-qa; then
+            echo "needed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "needed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Open the promotion PR
+        if: steps.check.outputs.needed == 'true'
+        id: open
+        run: |
+          NUM=$(gh pr list --base corp-qa --head "$FEATURE" --state open \
+                  --json number --jq '.[0].number // empty')
+          if [[ -z "$NUM" ]]; then
+            NUM=$(gh pr create --base corp-qa --head "$FEATURE" \
+                    --title "Promote $FEATURE to corp-qa" \
+                    --body "Raised automatically after a successful dev deploy (corp-dev PR #$DEV_PR). Auto-merge is on: this merges once approved. A successful deploy does NOT confirm the jobs were tested — approve only when dev testing is done." \
+                    --label "auto-promotion" | grep -oE '[0-9]+$')
+          fi
+          echo "number=$NUM" >> "$GITHUB_OUTPUT"
+          echo "PR #$NUM"
+
+      - name: Enable auto-merge
+        if: steps.open.outputs.number != ''
+        run: |
+          gh pr merge "${{ steps.open.outputs.number }}" --auto --merge \
+            || echo "::warning::auto-merge not enabled (conflict, or 'Allow auto-merge' is off)"
+
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo "### 1A promotion"
+            echo "- Feature: \`$FEATURE\`"
+            echo "- PR to corp-qa: #${{ steps.open.outputs.number }}"
+          } >> "$GITHUB_STEP_SUMMARY"

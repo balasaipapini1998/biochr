@@ -1,0 +1,24 @@
+# Stands in for a real pipeline. Present in every release — used to show
+# "updated in place, same job id" during a rollback.
+resources:
+  jobs:
+    customer_ingest:
+      name: cdp_sbx_customer_ingest_${var.env_suffix}
+      tags:
+        managed_by: databricks_asset_bundle
+        environment: ${var.env_suffix}
+      tasks:
+        - task_key: ingest
+          notebook_task:
+            notebook_path: ../src/customer_ingest.py
+            base_parameters:
+              env: ${var.env_suffix}
+          new_cluster:
+            spark_version: ${var.spark_version}
+            node_type_id: ${var.node_type_id}
+            num_workers: 0
+            spark_conf:
+              spark.databricks.cluster.profile: singleNode
+              spark.master: "local[*]"
+            custom_tags:
+              ResourceClass: SingleNode

@@ -1,0 +1,77 @@
+# ============================================================================
+# rollback — restore a previous release tag
+#
+# Rollback is NOT undoing commits. It re-deploys an older tag and lets the
+# bundle reconcile the workspace back. `ref:` on checkout is the whole trick.
+#
+#   Actions -> rollback -> Run workflow
+#     release_tag : cdp-release-1.1.0
+#     target      : master
+#
+# Watch the deploy output: it prints create / update / destroy per resource.
+# Afterwards Git and the workspace disagree — revert the release merge too.
+# ============================================================================
+
+name: rollback
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: 'Known-good tag to restore (e.g. cdp-release-1.1.0)'
+        required: true
+        type: string
+      target:
+        description: 'Target to restore'
+        required: true
+        type: choice
+        options: [corp-qa, master]
+      reason:
+        description: 'Reason — recorded in the run log'
+        required: true
+        type: string
+
+permissions:
+  contents: read          # deliberately cannot write to Git
+
+env:
+  DATABRICKS_HOST:  ${{ secrets.DATABRICKS_HOST }}
+  DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
+
+jobs:
+  rollback:
+    runs-on: ubuntu-latest
+    concurrency:
+      group: deploy-${{ inputs.target }}
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.release_tag }}      # <-- the mechanism
+          fetch-depth: 0
+
+      - name: Verify it is a release tag
+        run: |
+          TAG=$(git describe --exact-match --tags HEAD 2>/dev/null || true)
+          [[ "$TAG" =~ ^cdp-release- ]] || {
+            echo "::error::'${{ inputs.release_tag }}' is not a cdp-release-* tag"; exit 1; }
+          echo "Restoring $TAG to ${{ inputs.target }}"
+          echo "Reason: ${{ inputs.reason }}"
+          git log -1 --oneline
+
+      - uses: databricks/setup-cli@main
+      - run: databricks bundle validate -t ${{ inputs.target }}
+      - run: databricks bundle deploy -t ${{ inputs.target }}
+
+      - name: Remind
+        if: always()
+        run: |
+          {
+            echo "### Rollback"
+            echo "- Restored \`${{ inputs.release_tag }}\` to \`${{ inputs.target }}\`"
+            echo ""
+            echo "**Git and the workspace now disagree.** Follow up:"
+            echo '1. `git revert -m 1 <release-merge-sha>` via a PR into master'
+            echo '2. `git diff ${{ inputs.release_tag }} master` should be empty'
+            echo "3. Check whether any job came back with a NEW job id"
+          } >> "$GITHUB_STEP_SUMMARY"

@@ -1,0 +1,56 @@
+# ============================================================================
+# CDP sandbox bundle — THREE environments inside ONE Databricks workspace
+#
+# Separation is achieved two ways, because one workspace is shared:
+#   1. root_path   — each target deploys into its own folder
+#   2. env_suffix  — each target's jobs get a distinct name
+#
+# After deploying all three you will see in the Jobs UI:
+#   cdp_sbx_customer_ingest_dev / _qa / _prod
+#   cdp_sbx_segment_calc_dev    / _qa / _prod
+#
+# Jobs have NO schedule, so nothing ever runs and nothing ever costs money.
+# The whole exercise is about deployment mechanics, not execution.
+# ============================================================================
+
+bundle:
+  name: cdp_sandbox
+
+variables:
+  env_suffix:
+    description: Appended to job names so three environments can share one workspace
+    default: dev
+
+  node_type_id:
+    description: >
+      A node type valid in YOUR workspace's cloud. Change this once.
+      Azure: Standard_DS3_v2   AWS: i3.xlarge   GCP: n1-standard-4
+    default: Standard_DS3_v2
+
+  spark_version:
+    description: Databricks runtime version
+    default: "15.4.x-scala2.12"
+
+include:
+  - resources/*.yml
+
+targets:
+
+  corp-dev:
+    default: true
+    workspace:
+      root_path: /Users/${workspace.current_user.userName}/.bundle/cdp_sandbox_dev
+    variables:
+      env_suffix: dev
+
+  corp-qa:
+    workspace:
+      root_path: /Users/${workspace.current_user.userName}/.bundle/cdp_sandbox_qa
+    variables:
+      env_suffix: qa
+
+  master:
+    workspace:
+      root_path: /Users/${workspace.current_user.userName}/.bundle/cdp_sandbox_prod
+    variables:
+      env_suffix: prod

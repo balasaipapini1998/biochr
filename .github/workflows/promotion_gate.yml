@@ -1,0 +1,113 @@
+# ============================================================================
+# APPROACH 2 — promotion gate
+#
+# Required status check. Moves no code, deploys nothing — passes or fails.
+#
+#   feature  -> corp-dev    must be cut from master, not from corp-dev
+#   feature  -> corp-qa     must already be merged into corp-dev
+#   feature  -> release/*   must already be merged into corp-qa
+#   release/*-> master      every commit must already be in corp-qa
+#
+# Bypass: label the PR  emergency-hotfix
+# REQUIRES merge-commit strategy. Squash/rebase create new commit ids and
+# every check fails incorrectly (test 9 in the README proves this).
+# ============================================================================
+
+name: promotion_gate
+
+on:
+  pull_request:
+    types: [opened, reopened, synchronize, labeled, unlabeled]
+    branches: [corp-dev, corp-qa, 'release/**', master]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+
+      - name: Fetch comparison branches
+        run: git fetch origin master corp-dev corp-qa --quiet || true
+
+      - name: Emergency bypass?
+        id: bypass
+        run: |
+          if ${{ contains(github.event.pull_request.labels.*.name, 'emergency-hotfix') }}; then
+            echo "active=true" >> "$GITHUB_OUTPUT"
+            echo "::warning::EMERGENCY BYPASS by ${{ github.actor }} — gate skipped"
+          else
+            echo "active=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Enforce promotion order
+        if: steps.bypass.outputs.active == 'false'
+        env:
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+        run: |
+          set -euo pipefail
+          fail () { echo "::error::$1"; exit 1; }
+          echo "PR: $HEAD_REF -> $BASE_REF"
+          echo
+
+          case "$BASE_REF" in
+
+            corp-dev)
+              echo "Rule: branch must be cut from master, not corp-dev."
+              BAD=""
+              for c in $(git rev-list "$HEAD_SHA" --not origin/master --no-merges | head -200); do
+                git merge-base --is-ancestor "$c" origin/corp-dev 2>/dev/null && BAD="$BAD $c"
+              done
+              if [[ -n "$BAD" ]]; then
+                echo "Commits already in corp-dev but not in master:"
+                for c in $BAD; do git log -1 --oneline "$c"; done
+                fail "'$HEAD_REF' looks branched from corp-dev. Recreate from master: git checkout -b $HEAD_REF origin/master"
+              fi
+              echo "PASS — clean history."
+              ;;
+
+            corp-qa)
+              echo "Rule: must already be merged into corp-dev."
+              if git merge-base --is-ancestor "$HEAD_SHA" origin/corp-dev; then
+                echo "PASS — found in corp-dev."
+              else
+                fail "'$HEAD_REF' is not in corp-dev yet (or has newer commits). Merge to corp-dev and test there first."
+              fi
+              ;;
+
+            release/*)
+              echo "Rule: must already be merged into corp-qa."
+              if git merge-base --is-ancestor "$HEAD_SHA" origin/corp-qa; then
+                echo "PASS — found in corp-qa."
+              else
+                fail "'$HEAD_REF' is not in corp-qa yet. It cannot enter the release before QA has seen it."
+              fi
+              ;;
+
+            master)
+              if [[ "$HEAD_REF" != release/* && "$HEAD_REF" != hotfix/* ]]; then
+                fail "Only release/* or hotfix/* may merge into master. '$HEAD_REF' is neither."
+              fi
+              if [[ "$HEAD_REF" == hotfix/* ]]; then
+                echo "Hotfix — order not enforced. Remember the back-merge."
+                exit 0
+              fi
+              echo "Rule: every commit in this release must already be in corp-qa."
+              MISSING=""
+              for c in $(git rev-list origin/master.."$HEAD_SHA" --no-merges); do
+                git merge-base --is-ancestor "$c" origin/corp-qa 2>/dev/null || MISSING="$MISSING $c"
+              done
+              if [[ -n "$MISSING" ]]; then
+                echo "Commits QA has never seen:"
+                for c in $MISSING; do git log -1 --oneline "$c"; done
+                fail "This release contains code never merged into corp-qa."
+              fi
+              echo "PASS — all $(git rev-list --count origin/master.."$HEAD_SHA" --no-merges) commit(s) verified in corp-qa."
+              ;;
+          esac

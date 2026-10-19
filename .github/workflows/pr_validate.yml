@@ -1,0 +1,44 @@
+# ============================================================================
+# pr_validate — bundle validation BEFORE merge. Required status check.
+# ============================================================================
+
+name: pr_validate
+
+on:
+  pull_request:
+    types: [opened, reopened, synchronize]
+    branches: [corp-dev, corp-qa, 'release/**', master]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pr-validate-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+env:
+  DATABRICKS_HOST:  ${{ secrets.DATABRICKS_HOST }}
+  DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: databricks/setup-cli@main
+
+      - name: Pick the target to validate against
+        id: t
+        run: |
+          case "${{ github.event.pull_request.base.ref }}" in
+            corp-dev)  T=corp-dev ;;
+            corp-qa)   T=corp-qa ;;
+            release/*) T=corp-qa ;;
+            master)    T=master ;;
+            *)         T=corp-dev ;;
+          esac
+          echo "target=$T" >> "$GITHUB_OUTPUT"
+          echo "Validating against $T"
+
+      - name: Validate bundle
+        run: databricks bundle validate -t ${{ steps.t.outputs.target }}

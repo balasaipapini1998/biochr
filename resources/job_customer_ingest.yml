@@ -18,7 +18,7 @@
 resources:
   jobs:
     customer_ingest:
-      name: cdp_sbx_customer_ingest_${var.env_suffix}
+      name: cdp_sbx_customer_ingest_v2_${var.env_suffix}
       tags:
         managed_by: databricks_asset_bundle
         environment: ${var.env_suffix}

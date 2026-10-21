@@ -86,6 +86,10 @@ jobs:
           echo "tag=$NEW_TAG" >> "$GITHUB_OUTPUT"
           echo "Tagged $NEW_TAG — $REASON"
 
+      # NOTE: use if/fi, never  [[ cond ]] && echo ...
+      # GitHub runs steps with `bash -e`. If the test is false, the && list
+      # returns 1, and because it is the last command the whole step fails —
+      # even though the deploy succeeded.
       - name: Summary
         if: always()
         run: |
@@ -93,6 +97,8 @@ jobs:
             echo "### Deploy"
             echo "- Target: \`${{ github.ref_name }}\`"
             echo "- Commit: \`${GITHUB_SHA}\`"
-            [[ "${{ github.ref_name }}" == "master" ]] && \
-              echo "- Tag: \`${{ steps.tag.outputs.tag }}\`"
+            if [[ "${{ github.ref_name }}" == "master" ]]; then
+              echo "- Release tag: \`${{ steps.tag.outputs.tag }}\`"
+              echo "- Roll back with the \`rollback\` workflow and the previous tag."
+            fi
           } >> "$GITHUB_STEP_SUMMARY"

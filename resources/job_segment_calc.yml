@@ -1,25 +1,30 @@
-# Delete this file and redeploy to watch Databricks DESTROY the job.
-# Restore it (or roll back to an older tag) to watch it come back — with a
-# NEW job id. That is the rollback caveat, demonstrated.
+# Stands in for a real pipeline. Present in every release — used to show
+# "updated in place, same job id" during a rollback.
+#
+# NO compute block = SERVERLESS. That is required on Databricks Free Edition
+# and other serverless-only workspaces.
+#
+# If your workspace uses classic compute instead, add this under the task:
+#     new_cluster:
+#       spark_version: "15.4.x-scala2.12"
+#       node_type_id: i3.xlarge        # AWS  (Azure: Standard_DS3_v2)
+#       num_workers: 0
+#       spark_conf:
+#         spark.databricks.cluster.profile: singleNode
+#         spark.master: "local[*]"
+#       custom_tags:
+#         ResourceClass: SingleNode
+
 resources:
   jobs:
-    segment_calc:
-      name: cdp_sbx_segment_calc_${var.env_suffix}
+    customer_ingest:
+      name: cdp_sbx_customer_ingest_${var.env_suffix}
       tags:
         managed_by: databricks_asset_bundle
         environment: ${var.env_suffix}
       tasks:
-        - task_key: segment
+        - task_key: ingest
           notebook_task:
-            notebook_path: ../src/segment_calc.py
+            notebook_path: ../src/customer_ingest.py
             base_parameters:
               env: ${var.env_suffix}
-          new_cluster:
-            spark_version: ${var.spark_version}
-            node_type_id: ${var.node_type_id}
-            num_workers: 0
-            spark_conf:
-              spark.databricks.cluster.profile: singleNode
-              spark.master: "local[*]"
-            custom_tags:
-              ResourceClass: SingleNode

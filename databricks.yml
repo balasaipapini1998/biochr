@@ -9,7 +9,10 @@
 #   cdp_sbx_customer_ingest_dev / _qa / _prod
 #   cdp_sbx_segment_calc_dev    / _qa / _prod
 #
-# Jobs have NO schedule, so nothing ever runs and nothing ever costs money.
+# Jobs have NO schedule and NO compute block:
+#   - no schedule  -> nothing ever runs, nothing ever costs money
+#   - no compute   -> serverless, which is all Free Edition workspaces allow
+#
 # The whole exercise is about deployment mechanics, not execution.
 # ============================================================================
 
@@ -20,16 +23,6 @@ variables:
   env_suffix:
     description: Appended to job names so three environments can share one workspace
     default: dev
-
-  node_type_id:
-    description: >
-      A node type valid in YOUR workspace's cloud. Change this once.
-      Azure: Standard_DS3_v2   AWS: i3.xlarge   GCP: n1-standard-4
-    default: Standard_DS3_v2
-
-  spark_version:
-    description: Databricks runtime version
-    default: "15.4.x-scala2.12"
 
 include:
   - resources/*.yml

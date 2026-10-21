@@ -1,16 +1,36 @@
 # ============================================================================
 # APPROACH 2 — promotion gate
 #
-# Required status check. Moves no code, deploys nothing — passes or fails.
+# Two things are enforced on every PR:
 #
-#   feature  -> corp-dev    must be cut from master, not from corp-dev
-#   feature  -> corp-qa     must already be merged into corp-dev
-#   feature  -> release/*   must already be merged into corp-qa
-#   release/*-> master      every commit must already be in corp-qa
+#   A) WHICH SOURCE BRANCHES may target this base at all
+#   B) WHETHER the work has already passed through the earlier environment
+#
+# ---------------------------------------------------------------------------
+# ALLOWED SOURCES                     ORDER CHECK
+#
+#   -> corp-dev    feature/* bugfix/*    must be cut from master
+#                  hotfix/*  sync/*      (none — back-merge / emergency)
+#
+#   -> corp-qa     feature/* bugfix/*    must already be in corp-dev
+#                  hotfix/*  sync/*      (none)
+#
+#   -> release/*   feature/* bugfix/*    must already be in corp-qa
+#                  hotfix/*  sync/*      (none)
+#
+#   -> master      release/*             every commit must be in corp-qa
+#                  hotfix/*              (none — production emergency)
+#                  revert/*              (none — rollback follow-up)
+#
+# NOTE: corp-dev -> corp-qa is deliberately NOT allowed. That would promote
+# the whole branch instead of the feature, which is the contamination problem
+# the release train exists to prevent. Features reach corp-qa from their own
+# branch, exactly as they reached corp-dev.
+# ---------------------------------------------------------------------------
 #
 # Bypass: label the PR  emergency-hotfix
 # REQUIRES merge-commit strategy. Squash/rebase create new commit ids and
-# every check fails incorrectly (test 9 in the README proves this).
+# every ancestry check fails incorrectly.
 # ============================================================================
 
 name: promotion_gate
@@ -44,7 +64,7 @@ jobs:
             echo "active=false" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Enforce promotion order
+      - name: Enforce promotion rules
         if: steps.bypass.outputs.active == 'false'
         env:
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
@@ -53,23 +73,71 @@ jobs:
         run: |
           set -euo pipefail
           fail () { echo "::error::$1"; exit 1; }
-          echo "PR: $HEAD_REF -> $BASE_REF"
+
+          echo "PR: $HEAD_REF  ->  $BASE_REF"
           echo
 
+          # ================= A. allowed source branches =====================
+          case "$BASE_REF" in
+            corp-dev|corp-qa)
+              case "$HEAD_REF" in
+                feature/*|bugfix/*|hotfix/*|sync/*) ;;
+                corp-dev)
+                  fail "corp-dev cannot be merged into corp-qa. That promotes the whole branch instead of the feature. Merge the feature branch into corp-qa directly." ;;
+                *)
+                  fail "'$HEAD_REF' may not target $BASE_REF. Allowed: feature/*, bugfix/*, hotfix/*, sync/*" ;;
+              esac ;;
+            release/*)
+              case "$HEAD_REF" in
+                feature/*|bugfix/*|hotfix/*|sync/*) ;;
+                *) fail "'$HEAD_REF' may not target a release branch. Allowed: feature/*, bugfix/*, hotfix/*, sync/*" ;;
+              esac ;;
+            master)
+              case "$HEAD_REF" in
+                release/*|hotfix/*|revert/*) ;;
+                *) fail "'$HEAD_REF' may not target master. Allowed: release/*, hotfix/*, revert/*" ;;
+              esac ;;
+          esac
+          echo "Source branch allowed for this target."
+          echo
+
+          # Emergency, back-merge and rollback branches skip the order check:
+          # by definition they are not following the normal promotion path.
+          case "$HEAD_REF" in
+            hotfix/*|sync/*|revert/*)
+              echo "'$HEAD_REF' is an out-of-band branch — promotion order not enforced."
+              if [[ "$HEAD_REF" == hotfix/* && "$BASE_REF" == "master" ]]; then
+                echo "::warning::Remember to back-merge master into corp-qa and corp-dev, and into any open release branch."
+              fi
+              exit 0 ;;
+          esac
+
+          # ================= B. promotion order =============================
           case "$BASE_REF" in
 
             corp-dev)
-              echo "Rule: branch must be cut from master, not corp-dev."
+              # Look only at MERGE commits that are also reachable from corp-dev.
+              #
+              # Why merges only: once your branch has been merged into corp-dev
+              # once, your own earlier commits ARE reachable from corp-dev. An
+              # all-commits check flags them and blocks your second PR — a false
+              # positive. Your branch never contains the merge commit that merged
+              # it, so merge commits are the reliable signal that corp-dev's
+              # history has leaked into your branch.
+              #
+              # Catches: branch cut from corp-dev, and corp-dev merged into a branch.
+              # Allows:  repeat merges of the same branch, and master merged in.
+              echo "Rule: the branch must be cut from master, not from corp-dev."
               BAD=""
-              for c in $(git rev-list "$HEAD_SHA" --not origin/master --no-merges | head -200); do
+              for c in $(git rev-list "$HEAD_SHA" --not origin/master --merges | head -200); do
                 git merge-base --is-ancestor "$c" origin/corp-dev 2>/dev/null && BAD="$BAD $c"
               done
               if [[ -n "$BAD" ]]; then
-                echo "Commits already in corp-dev but not in master:"
+                echo "This branch carries corp-dev history:"
                 for c in $BAD; do git log -1 --oneline "$c"; done
-                fail "'$HEAD_REF' looks branched from corp-dev. Recreate from master: git checkout -b $HEAD_REF origin/master"
+                fail "'$HEAD_REF' carries corp-dev's history — it was cut from corp-dev, or corp-dev was merged into it. Recreate from master: git checkout -b $HEAD_REF origin/master   (to stay current, merge origin/master in, never origin/corp-dev)"
               fi
-              echo "PASS — clean history."
+              echo "PASS — no corp-dev history in this branch."
               ;;
 
             corp-qa)
@@ -77,7 +145,7 @@ jobs:
               if git merge-base --is-ancestor "$HEAD_SHA" origin/corp-dev; then
                 echo "PASS — found in corp-dev."
               else
-                fail "'$HEAD_REF' is not in corp-dev yet (or has newer commits). Merge to corp-dev and test there first."
+                fail "'$HEAD_REF' is not in corp-dev yet (or has newer commits since). Merge it to corp-dev and test there first."
               fi
               ;;
 
@@ -91,13 +159,6 @@ jobs:
               ;;
 
             master)
-              if [[ "$HEAD_REF" != release/* && "$HEAD_REF" != hotfix/* ]]; then
-                fail "Only release/* or hotfix/* may merge into master. '$HEAD_REF' is neither."
-              fi
-              if [[ "$HEAD_REF" == hotfix/* ]]; then
-                echo "Hotfix — order not enforced. Remember the back-merge."
-                exit 0
-              fi
               echo "Rule: every commit in this release must already be in corp-qa."
               MISSING=""
               for c in $(git rev-list origin/master.."$HEAD_SHA" --no-merges); do

@@ -116,17 +116,28 @@ jobs:
           case "$BASE_REF" in
 
             corp-dev)
+              # Look only at MERGE commits that are also reachable from corp-dev.
+              #
+              # Why merges only: once your branch has been merged into corp-dev
+              # once, your own earlier commits ARE reachable from corp-dev. An
+              # all-commits check flags them and blocks your second PR — a false
+              # positive. Your branch never contains the merge commit that merged
+              # it, so merge commits are the reliable signal that corp-dev's
+              # history has leaked into your branch.
+              #
+              # Catches: branch cut from corp-dev, and corp-dev merged into a branch.
+              # Allows:  repeat merges of the same branch, and master merged in.
               echo "Rule: the branch must be cut from master, not from corp-dev."
               BAD=""
-              for c in $(git rev-list "$HEAD_SHA" --not origin/master --no-merges | head -200); do
+              for c in $(git rev-list "$HEAD_SHA" --not origin/master --merges | head -200); do
                 git merge-base --is-ancestor "$c" origin/corp-dev 2>/dev/null && BAD="$BAD $c"
               done
               if [[ -n "$BAD" ]]; then
-                echo "Commits already in corp-dev but not in master:"
+                echo "This branch carries corp-dev history:"
                 for c in $BAD; do git log -1 --oneline "$c"; done
-                fail "'$HEAD_REF' looks branched from corp-dev. Recreate it from master: git checkout -b $HEAD_REF origin/master"
+                fail "'$HEAD_REF' carries corp-dev's history — it was cut from corp-dev, or corp-dev was merged into it. Recreate from master: git checkout -b $HEAD_REF origin/master   (to stay current, merge origin/master in, never origin/corp-dev)"
               fi
-              echo "PASS — history contains only master plus its own commits."
+              echo "PASS — no corp-dev history in this branch."
               ;;
 
             corp-qa)
